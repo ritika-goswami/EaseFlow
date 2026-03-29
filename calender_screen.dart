@@ -11,7 +11,8 @@ class CalendarScreen extends StatefulWidget {
   State<CalendarScreen> createState() => _CalendarScreenState();
 }
 
-class _CalendarScreenState extends State<CalendarScreen> {
+// Added WidgetsBindingObserver to listen for app lifecycle changes (like returning to this screen)
+class _CalendarScreenState extends State<CalendarScreen> with WidgetsBindingObserver {
   int currentMonthIndex = DateTime.now().month - 1;
   int currentYear = 2026;
   final List<String> months = [
@@ -28,16 +29,36 @@ class _CalendarScreenState extends State<CalendarScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this); // Start observing
     _loadSyncData();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this); // Clean up observer
+    super.dispose();
+  }
+
+  // This triggers when the user navigates back to this screen from Profile
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _loadSyncData(); // Re-fetch data if the user changed it elsewhere
+    }
   }
 
   Future<void> _loadSyncData() async {
     final prefs = await SharedPreferences.getInstance();
-    String rawCycle = prefs.getString('cycleLength') ?? "6 days";
+    
+    // Updated to match your Profile Screen key "Cycle length"
+    String? rawCycle = prefs.getString('Cycle length'); 
     String? historyJson = prefs.getString('period_history_list');
     
     setState(() {
-      userPeriodDuration = int.parse(rawCycle.replaceAll(RegExp(r'[^0-9]'), ''));
+      if (rawCycle != null) {
+        // Extract numbers only, just in case "days" was appended
+        userPeriodDuration = int.parse(rawCycle.replaceAll(RegExp(r'[^0-9]'), ''));
+      }
       
       if (historyJson != null) {
         Iterable l = json.decode(historyJson);
@@ -46,7 +67,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
           "end": DateTime.parse(item['end']),
         }).toList();
         
-        // Sort to ensure the latest log is always the primary anchor
         if (periodHistory.isNotEmpty) {
           periodHistory.sort((a, b) => b['start']!.compareTo(a['start']!));
           lastLoggedDate = periodHistory.first['start'];
@@ -67,10 +87,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
   int get _calculatedDay {
     if (lastLoggedDate == null) return 1;
     DateTime now = DateTime.now();
-    // Calculate difference based on the most recent manual log
     int daysSinceLog = now.difference(lastLoggedDate!).inDays;
-    
-    // If we are past a full cycle, we predict based on the last log
     return (daysSinceLog % totalCycleLength) + 1;
   }
 
@@ -138,14 +155,12 @@ class _CalendarScreenState extends State<CalendarScreen> {
                   DateTime end = start.add(Duration(days: userPeriodDuration - 1));
                   
                   setState(() {
-                    // CRITICAL FIX: Remove any existing history for the same month/year to avoid double-showing
                     periodHistory.removeWhere((element) => 
                       element['start']!.month == start.month && 
                       element['start']!.year == start.year
                     );
 
                     periodHistory.add({"start": start, "end": end});
-                    // Re-sort to make sure the latest date is the anchor
                     periodHistory.sort((a, b) => b['start']!.compareTo(a['start']!));
                     lastLoggedDate = periodHistory.first['start'];
                   });
@@ -387,7 +402,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
         );
         if (picked != null) {
           setState(() {
-            // FIX: Remove entries that overlap with the new manual range
             periodHistory.removeWhere((element) => 
               (picked.start.isBefore(element['end']!) && picked.end.isAfter(element['start']!))
             );

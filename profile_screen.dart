@@ -49,11 +49,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
             userPhoneNumber = data['number'] ?? "";
           });
           
-          // Sync Cloud to Local for Calendar use
           await prefs.setString('age', age);
           await prefs.setString('weight', weight);
           await prefs.setString('height', height);
-          await prefs.setString('cycleLength', cycleLength);
+          await prefs.setString('Cycle length', cycleLength);
         }
       } catch (e) {
         debugPrint("Error fetching cloud data: $e");
@@ -63,6 +62,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
     setState(() {
       _isDarkMode = prefs.getBool('darkMode') ?? false;
       _notifications = prefs.getBool('notifications') ?? true;
+      
+      if (cycleLength == "--") {
+        cycleLength = prefs.getString('Cycle length') ?? "--";
+      }
+
       String? imagePath = prefs.getString('profile_image_path');
       if (imagePath != null && imagePath.isNotEmpty) {
         _image = File(imagePath);
@@ -71,7 +75,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
     });
   }
 
-  // --- VALIDATION LOGIC ---
   String? _validateInput(String title, String value) {
     if (value.isEmpty) return "Field cannot be empty";
     int? numVal = int.tryParse(value);
@@ -80,11 +83,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
     if (title == "Age") {
       if (numVal < 10 || numVal > 90) return "Please enter a realistic age (10-90)";
     } else if (title == "Cycle length") {
-      if (numVal < 2 || numVal > 13) return "Typical period dates are 4-7 days";
+      if (numVal < 2 || numVal > 13) return "Typical period duration is 3-8 days";
     } else if (title == "Weight") {
       if (numVal < 20 || numVal > 180) return "Please enter a valid weight";
     }
-    return null; // Valid
+    return null; 
   }
 
   Future<void> _updateField(String key, String value) async {
@@ -93,8 +96,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
     
     User? user = FirebaseAuth.instance.currentUser;
     if (user != null) {
+      String dbKey = key == 'Cycle length' ? 'cycleLength' : key;
       await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
-        key: value,
+        dbKey: value,
         'lastUpdated': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
     }
@@ -183,7 +187,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     _buildInfoCard("Age", age, cardColor, () => _showEditDialog("Age", age, 'age', (v) => setState(() => age = v))),
                     _buildInfoCard("Weight", weight, cardColor, () => _showEditDialog("Weight", weight, 'weight', (v) => setState(() => weight = v))),
                     _buildInfoCard("Height", height, cardColor, () => _showEditDialog("Height", height, 'height', (v) => setState(() => height = v))),
-                    _buildInfoCard("Cycle length", cycleLength, cardColor, () => _showEditDialog("Cycle length", cycleLength, 'cycleLength', (v) => setState(() => cycleLength = v))),
+                    _buildInfoCard("Cycle length", cycleLength, cardColor, () => _showEditDialog("Cycle length", cycleLength, 'Cycle length', (v) => setState(() => cycleLength = v))),
                     const SizedBox(height: 25),
                     const Text("Preferences :", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                     const SizedBox(height: 15),
@@ -227,11 +231,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ),
           ),
           const Text("Profile", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, fontFamily: 'Serif')),
-          const CircleAvatar(
-            backgroundColor: Colors.white,
-            radius: 18,
-            child: Icon(Icons.person, color: Colors.black, size: 20),
-          ),
+          const CircleAvatar(backgroundColor: Colors.white, radius: 18, child: Icon(Icons.person, color: Colors.black, size: 20)),
         ],
       ),
     );
@@ -242,18 +242,25 @@ class _ProfileScreenState extends State<ProfileScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text("Logout"),
-        content: const Text("Are you sure?"),
+        content: const Text("Are you sure? This will clear all local session data."),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context), child: const Text("No")),
           TextButton(
             onPressed: () async {
+              final prefs = await SharedPreferences.getInstance();
+              
+              // --- CRITICAL: Clear all local data so the next user starts fresh ---
+              await prefs.remove('period_history_list'); 
+              await prefs.remove('Cycle length');
+              await prefs.remove('age');
+              await prefs.remove('weight');
+              await prefs.remove('height');
+              await prefs.remove('profile_image_path');
+              // You can also use await prefs.clear(); if you want to wipe everything.
+
               await FirebaseAuth.instance.signOut();
               if (mounted) {
-                Navigator.pushAndRemoveUntil(
-                  context,
-                  MaterialPageRoute(builder: (context) => const AuthScreen()),
-                  (route) => false
-                );
+                Navigator.pushAndRemoveUntil(context, MaterialPageRoute(builder: (context) => const AuthScreen()), (route) => false);
               }
             },
             child: const Text("Yes", style: TextStyle(color: Colors.red))
@@ -281,11 +288,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     backgroundImage: _image != null ? FileImage(_image!) : null,
                     child: _image == null ? const Icon(Icons.person, size: 40, color: Colors.black) : null,
                   ),
-                  const CircleAvatar(
-                    radius: 12,
-                    backgroundColor: Colors.white,
-                    child: Icon(Icons.camera_alt_outlined, size: 14, color: Colors.black),
-                  )
+                  const CircleAvatar(radius: 12, backgroundColor: Colors.white, child: Icon(Icons.camera_alt_outlined, size: 14, color: Colors.black))
                 ],
               ),
             ),
@@ -299,10 +302,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     const SizedBox(width: 10),
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                      decoration: BoxDecoration(
-                        border: Border.all(color: Colors.green.shade200),
-                        borderRadius: BorderRadius.circular(10)
-                      ),
+                      decoration: BoxDecoration(border: Border.all(color: Colors.green.shade200), borderRadius: BorderRadius.circular(10)),
                       child: const Text("Verified", style: TextStyle(color: Colors.green, fontSize: 10, fontWeight: FontWeight.bold)),
                     )
                   ],

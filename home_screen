@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'dart:async';
-// Assuming UserData is in your project to fetch the name
 import 'package:easeflow_app/user_data.dart'; 
 
 class HomeScreen extends StatefulWidget {
@@ -13,16 +12,21 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  // MATCHED TO YOUR ESP32 STATIC IP
   final String espIp = "192.168.43.105"; 
   
   bool isConnected = false;
   Timer? _connectionTimer;
 
   bool isFrontSelected = true;
-  String selectedHeat = "Off"; 
+
+  // --- INDEPENDENT STATE VARIABLES ---
+  String selectedFrontHeat = "Off"; 
+  String selectedBackHeat = "Off";
+  
+  String selectedFrontDuration = "Continuous";
+  String selectedBackDuration = "Continuous";
+
   String selectedVibration = "Off";
-  String selectedDuration = "Continuous"; // Matches ESP default
   String selectedVibType = "wave";
 
   @override
@@ -30,7 +34,6 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _loadSavedSettings();
     
-    // Heartbeat check every 3 seconds
     _connectionTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
       _checkConnection();
     });
@@ -91,9 +94,16 @@ class _HomeScreenState extends State<HomeScreen> {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
       isFrontSelected = prefs.getBool('isFront') ?? true;
-      selectedHeat = prefs.getString('heatLevel') ?? "Off";
+      
+      // Load Independent Heat Levels
+      selectedFrontHeat = prefs.getString('frontHeatLevel') ?? "Off";
+      selectedBackHeat = prefs.getString('backHeatLevel') ?? "Off";
+      
+      // Load Independent Durations
+      selectedFrontDuration = prefs.getString('frontHeatDuration') ?? "Continuous";
+      selectedBackDuration = prefs.getString('backHeatDuration') ?? "Continuous";
+
       selectedVibration = prefs.getString('vibLevel') ?? "Off";
-      selectedDuration = prefs.getString('heatDuration') ?? "Continuous";
       selectedVibType = prefs.getString('vibPattern') ?? "wave";
     });
   }
@@ -106,8 +116,12 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Determine which value to show based on toggle
+    String currentHeat = isFrontSelected ? selectedFrontHeat : selectedBackHeat;
+    String currentDuration = isFrontSelected ? selectedFrontDuration : selectedBackDuration;
+
     return Scaffold(
-      backgroundColor: const Color(0xFFFDF0F0), // Matches ESP32 Web CSS
+      backgroundColor: const Color(0xFFFDF0F0), 
       body: SafeArea(
         child: SingleChildScrollView(
           child: Column(
@@ -115,7 +129,7 @@ class _HomeScreenState extends State<HomeScreen> {
               _buildHeader(),
               const SizedBox(height: 10),
               
-              // TAB TOGGLE (Matches ESP32 CSS Style)
+              // TAB TOGGLE
               Container(
                 width: 280,
                 padding: const EdgeInsets.all(4),
@@ -130,7 +144,8 @@ class _HomeScreenState extends State<HomeScreen> {
                         onTap: () {
                           setState(() => isFrontSelected = true);
                           _saveSetting('isFront', true);
-                          _sendCommand("Hfront${_getIntensityValue(selectedHeat)}");
+                          // Sync hardware with stored front heat
+                          _sendCommand("Hfront${_getIntensityValue(selectedFrontHeat)}");
                         },
                         child: _buildToggleButton("Front", isFrontSelected),
                       ),
@@ -140,7 +155,8 @@ class _HomeScreenState extends State<HomeScreen> {
                         onTap: () {
                           setState(() => isFrontSelected = false);
                           _saveSetting('isFront', false);
-                          _sendCommand("Hback${_getIntensityValue(selectedHeat)}");
+                          // Sync hardware with stored back heat
+                          _sendCommand("Hback${_getIntensityValue(selectedBackHeat)}");
                         },
                         child: _buildToggleButton("Back", !isFrontSelected),
                       ),
@@ -150,17 +166,25 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               const SizedBox(height: 30),
               
-              // HEAT CARD
+              // HEAT CARD (Now using independent variables)
               _buildTherapyCard(
                 "Heat Therapy", 
-                "Hfront", // Prefix for command
+                isFrontSelected ? "Hfront" : "Hback", 
                 ["Off", "L", "M", "H"], 
-                selectedHeat,
+                currentHeat,
+                currentDuration,
                 (val) {
-                  setState(() => selectedHeat = val);
-                  _saveSetting('heatLevel', val);
-                  String side = isFrontSelected ? "front" : "back";
-                  _sendCommand("H$side${_getIntensityValue(val)}");
+                  setState(() {
+                    if (isFrontSelected) {
+                      selectedFrontHeat = val;
+                      _saveSetting('frontHeatLevel', val);
+                      _sendCommand("Hfront${_getIntensityValue(val)}");
+                    } else {
+                      selectedBackHeat = val;
+                      _saveSetting('backHeatLevel', val);
+                      _sendCommand("Hback${_getIntensityValue(val)}");
+                    }
+                  });
                 }
               ),
               
@@ -170,13 +194,16 @@ class _HomeScreenState extends State<HomeScreen> {
               if (isFrontSelected) 
                 _buildTherapyCard(
                   "Vibration Therapy", 
-                  "VI", // Prefix for Intensity
+                  "VI", 
                   ["Off", "L", "M", "H"], 
                   selectedVibration,
+                  selectedVibType, // Using pattern variable here
                   (val) {
-                    setState(() => selectedVibration = val);
-                    _saveSetting('vibLevel', val);
-                    _sendCommand("VI${_getIntensityValue(val)}");
+                    setState(() {
+                      selectedVibration = val;
+                      _saveSetting('vibLevel', val);
+                      _sendCommand("VI${_getIntensityValue(val)}");
+                    });
                   }
                 ),
               const SizedBox(height: 100), 
@@ -250,7 +277,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildTherapyCard(String title, String cmdPrefix, List<String> levels, String currentVal, Function(String) onSelect) {
+  Widget _buildTherapyCard(String title, String cmdPrefix, List<String> levels, String currentVal, String currentSubVal, Function(String) onSelect) {
     bool isHeat = title.contains("Heat");
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 14),
@@ -294,7 +321,7 @@ class _HomeScreenState extends State<HomeScreen> {
             decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14)),
             child: DropdownButtonHideUnderline(
               child: DropdownButton<String>(
-                value: isHeat ? selectedDuration : selectedVibType,
+                value: currentSubVal,
                 isExpanded: true,
                 items: isHeat 
                   ? ['5 min', '10 min', '15 min', 'Continuous'].map((val) => DropdownMenuItem(value: val, child: Text(val))).toList()
@@ -302,10 +329,14 @@ class _HomeScreenState extends State<HomeScreen> {
                 onChanged: (newValue) {
                   setState(() {
                     if (isHeat) { 
-                      selectedDuration = newValue!; 
-                      _saveSetting('heatDuration', newValue);
-                      // Sends D0, D5, D10, or D15 to ESP
-                      String mins = newValue.replaceAll(RegExp(r'[^0-9]'), '');
+                      if (isFrontSelected) {
+                        selectedFrontDuration = newValue!;
+                        _saveSetting('frontHeatDuration', newValue);
+                      } else {
+                        selectedBackDuration = newValue!;
+                        _saveSetting('backHeatDuration', newValue);
+                      }
+                      String mins = newValue!.replaceAll(RegExp(r'[^0-9]'), '');
                       _sendCommand("D${mins.isEmpty ? '0' : mins}");
                     } else { 
                       selectedVibType = newValue!; 

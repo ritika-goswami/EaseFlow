@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:easeflow_app/user_data.dart'; // IMPORTED YOUR NEW FILE
+import 'package:http/http.dart' as http;
+import 'dart:async';
+// Assuming UserData is in your project to fetch the name
+import 'package:easeflow_app/user_data.dart'; 
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -10,17 +13,79 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  // MATCHED TO YOUR ESP32 STATIC IP
+  final String espIp = "192.168.43.105"; 
+  
+  bool isConnected = false;
+  Timer? _connectionTimer;
+
   bool isFrontSelected = true;
   String selectedHeat = "Off"; 
   String selectedVibration = "Off";
-  String selectedDuration = "5 min";
+  String selectedDuration = "Continuous"; // Matches ESP default
   String selectedVibType = "wave";
 
   @override
   void initState() {
     super.initState();
     _loadSavedSettings();
+    
+    // Heartbeat check every 3 seconds
+    _connectionTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
+      _checkConnection();
+    });
   }
+
+  @override
+  void dispose() {
+    _connectionTimer?.cancel();
+    super.dispose();
+  }
+
+  // --- HARDWARE COMMUNICATION ---
+
+  Future<void> _checkConnection() async {
+    try {
+      final response = await http.get(Uri.parse('http://$espIp/')).timeout(const Duration(seconds: 1));
+      if (response.statusCode == 200) {
+        if (!isConnected) setState(() => isConnected = true);
+      } else {
+        if (isConnected) setState(() => isConnected = false);
+      }
+    } catch (e) {
+      if (isConnected) setState(() => isConnected = false);
+    }
+  }
+
+  Future<void> _sendCommand(String val) async {
+    try {
+      final url = Uri.parse('http://$espIp/cmd?val=$val');
+      await http.get(url).timeout(const Duration(seconds: 2));
+      print("ESP32 Command: $val");
+    } catch (e) {
+      print("Connection Error: $e");
+    }
+  }
+
+  int _getIntensityValue(String level) {
+    switch (level) {
+      case "L": return 1;
+      case "M": return 2;
+      case "H": return 3;
+      default: return 0;
+    }
+  }
+
+  int _getPatternValue(String pattern) {
+    switch (pattern.toLowerCase()) {
+      case "wave": return 1;
+      case "pulse": return 2;
+      case "circular": return 3;
+      default: return 0;
+    }
+  }
+
+  // --- SETTINGS STORAGE ---
 
   Future<void> _loadSavedSettings() async {
     final prefs = await SharedPreferences.getInstance();
@@ -28,9 +93,8 @@ class _HomeScreenState extends State<HomeScreen> {
       isFrontSelected = prefs.getBool('isFront') ?? true;
       selectedHeat = prefs.getString('heatLevel') ?? "Off";
       selectedVibration = prefs.getString('vibLevel') ?? "Off";
-      selectedDuration = prefs.getString('heatDuration') ?? "5 min";
+      selectedDuration = prefs.getString('heatDuration') ?? "Continuous";
       selectedVibType = prefs.getString('vibPattern') ?? "wave";
-      // Removed local userName loading because we are using Firebase now
     });
   }
 
@@ -43,18 +107,21 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: const Color(0xFFFDF0F0), // Matches ESP32 Web CSS
       body: SafeArea(
         child: SingleChildScrollView(
           child: Column(
             children: [
               _buildHeader(),
               const SizedBox(height: 10),
+              
+              // TAB TOGGLE (Matches ESP32 CSS Style)
               Container(
-                width: 250,
+                width: 280,
+                padding: const EdgeInsets.all(4),
                 decoration: BoxDecoration(
-                  color: const Color(0xFFF0F0F0),
-                  borderRadius: BorderRadius.circular(25),
+                  color: const Color(0xFFEDE8E8),
+                  borderRadius: BorderRadius.circular(40),
                 ),
                 child: Row(
                   children: [
@@ -63,6 +130,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         onTap: () {
                           setState(() => isFrontSelected = true);
                           _saveSetting('isFront', true);
+                          _sendCommand("Hfront${_getIntensityValue(selectedHeat)}");
                         },
                         child: _buildToggleButton("Front", isFrontSelected),
                       ),
@@ -72,6 +140,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         onTap: () {
                           setState(() => isFrontSelected = false);
                           _saveSetting('isFront', false);
+                          _sendCommand("Hback${_getIntensityValue(selectedHeat)}");
                         },
                         child: _buildToggleButton("Back", !isFrontSelected),
                       ),
@@ -80,26 +149,34 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
               const SizedBox(height: 30),
+              
+              // HEAT CARD
               _buildTherapyCard(
                 "Heat Therapy", 
-                "50°C", 
+                "Hfront", // Prefix for command
                 ["Off", "L", "M", "H"], 
                 selectedHeat,
                 (val) {
                   setState(() => selectedHeat = val);
                   _saveSetting('heatLevel', val);
+                  String side = isFrontSelected ? "front" : "back";
+                  _sendCommand("H$side${_getIntensityValue(val)}");
                 }
               ),
+              
               const SizedBox(height: 20),
+              
+              // VIBRATION CARD (Only visible when Front is selected)
               if (isFrontSelected) 
                 _buildTherapyCard(
                   "Vibration Therapy", 
-                  "", 
+                  "VI", // Prefix for Intensity
                   ["Off", "L", "M", "H"], 
                   selectedVibration,
                   (val) {
                     setState(() => selectedVibration = val);
                     _saveSetting('vibLevel', val);
+                    _sendCommand("VI${_getIntensityValue(val)}");
                   }
                 ),
               const SizedBox(height: 100), 
@@ -112,54 +189,43 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildHeader() {
     return Padding(
-      padding: const EdgeInsets.all(20.0),
+      padding: const EdgeInsets.all(24.0),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // UPDATED: FutureBuilder fetches the name from Firebase
               FutureBuilder<String>(
                 future: UserData.getUserName(),
                 builder: (context, snapshot) {
-                  String displayName = snapshot.data ?? "User";
                   return Text(
-                    "Hi, $displayName", 
-                    style: const TextStyle(
-                      fontSize: 22, 
-                      fontWeight: FontWeight.bold, 
-                      color: Color(0xFFE79AA2)
-                    )
+                    "Hi, ${snapshot.data ?? 'Riya'}", 
+                    style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: Color(0xFFE57373))
                   );
                 },
               ),
-              const Text("How are you feeling today?", style: TextStyle(fontSize: 14, fontStyle: FontStyle.italic)),
+              const Text("How are you feeling today?", style: TextStyle(fontSize: 13, color: Color(0xFF9A7A7A))),
             ],
           ),
-          Hero(
-            tag: "profile-image",
-            child: Stack(
-              children: [
-                const CircleAvatar(
-                  backgroundColor: Color(0xFFE5D6D6), 
-                  child: Icon(Icons.person, color: Colors.black)
-                ),
-                Positioned(
-                  right: 0, 
-                  bottom: 0, 
-                  child: Container(
-                    width: 12, 
-                    height: 12, 
-                    decoration: BoxDecoration(
-                      color: Colors.green, 
-                      shape: BoxShape.circle,
-                      border: Border.all(color: Colors.white, width: 2),
-                    )
-                  )
-                ),
-              ],
-            ),
+          Stack(
+            children: [
+              const CircleAvatar(
+                backgroundColor: Color(0xFFE2C4C4), 
+                child: Icon(Icons.person, color: Colors.white)
+              ),
+              Positioned(
+                right: 0, bottom: 0, 
+                child: Container(
+                  width: 12, height: 12, 
+                  decoration: BoxDecoration(
+                    color: isConnected ? Colors.green : Colors.grey, 
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white, width: 2),
+                  ),
+                )
+              ),
+            ],
           )
         ],
       ),
@@ -168,37 +234,38 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildToggleButton(String text, bool isActive) {
     return Container(
-      padding: const EdgeInsets.symmetric(vertical: 10),
+      padding: const EdgeInsets.symmetric(vertical: 11),
       decoration: BoxDecoration(
-        color: isActive ? const Color(0xFFE5D6D6) : Colors.transparent,
-        borderRadius: BorderRadius.circular(25),
+        color: isActive ? const Color(0xFFE2C4C4) : Colors.transparent,
+        borderRadius: BorderRadius.circular(36),
       ),
-      child: Center(child: Text(text, style: const TextStyle(fontWeight: FontWeight.bold))),
+      child: Center(
+        child: Text(text, 
+          style: TextStyle(
+            fontWeight: FontWeight.w700, 
+            color: isActive ? const Color(0xFF3A2A2A) : const Color(0xFF9A7A7A)
+          )
+        )
+      ),
     );
   }
 
-  Widget _buildTherapyCard(String title, String temp, List<String> levels, String currentVal, Function(String) onSelect) {
+  Widget _buildTherapyCard(String title, String cmdPrefix, List<String> levels, String currentVal, Function(String) onSelect) {
     bool isHeat = title.contains("Heat");
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 20),
+      margin: const EdgeInsets.symmetric(horizontal: 14),
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: const Color(0xFFFDE4E4),
-        borderRadius: BorderRadius.circular(30),
-        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 5))],
+        color: const Color(0xFFFDE8E8),
+        borderRadius: BorderRadius.circular(22),
+        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 20, offset: const Offset(0, 4))],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-              if (temp.isNotEmpty) Text(temp, style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
-            ],
-          ),
-          const SizedBox(height: 15),
-          const Text("Intensity", style: TextStyle(color: Colors.grey, fontSize: 12)),
+          Text(title, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800, color: Color(0xFF3A2A2A))),
+          const SizedBox(height: 14),
+          const Text("Intensity", style: TextStyle(color: Color(0xFF9A7A7A), fontSize: 12, fontWeight: FontWeight.w600)),
           const SizedBox(height: 10),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -206,39 +273,44 @@ class _HomeScreenState extends State<HomeScreen> {
               bool isSelected = currentVal == l;
               return GestureDetector(
                 onTap: () => onSelect(l),
-                child: CircleAvatar(
-                  radius: 20,
-                  backgroundColor: isSelected ? const Color(0xFFE79AA2) : Colors.white,
-                  child: Text(l, style: TextStyle(fontSize: 12, color: isSelected ? Colors.white : Colors.black)),
+                child: Container(
+                  width: 60,
+                  height: 40,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: isSelected ? const Color(0xFFE57373) : Colors.white,
+                    borderRadius: BorderRadius.circular(50),
+                  ),
+                  child: Text(l, style: TextStyle(fontWeight: FontWeight.w700, color: isSelected ? Colors.white : Colors.black)),
                 ),
               );
             }).toList(),
           ),
           const SizedBox(height: 20),
-          const Text("Pattern", style: TextStyle(color: Colors.grey, fontSize: 12)),
+          Text(isHeat ? "Duration" : "Pattern", style: const TextStyle(color: Color(0xFF9A7A7A), fontSize: 12, fontWeight: FontWeight.w600)),
           const SizedBox(height: 8),
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.8), 
-              borderRadius: BorderRadius.circular(12)
-            ),
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14)),
             child: DropdownButtonHideUnderline(
               child: DropdownButton<String>(
                 value: isHeat ? selectedDuration : selectedVibType,
                 isExpanded: true,
-                icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
                 items: isHeat 
-                  ? ['5 min', '10 min', '15 min', 'Continuous'].map((String val) => DropdownMenuItem(value: val, child: Text(val))).toList()
-                  : ['wave', 'switching', 'circular'].map((String val) => DropdownMenuItem(value: val, child: Text(val))).toList(),
+                  ? ['5 min', '10 min', '15 min', 'Continuous'].map((val) => DropdownMenuItem(value: val, child: Text(val))).toList()
+                  : ['wave', 'pulse', 'circular'].map((val) => DropdownMenuItem(value: val, child: Text(val))).toList(),
                 onChanged: (newValue) {
                   setState(() {
                     if (isHeat) { 
                       selectedDuration = newValue!; 
                       _saveSetting('heatDuration', newValue);
+                      // Sends D0, D5, D10, or D15 to ESP
+                      String mins = newValue.replaceAll(RegExp(r'[^0-9]'), '');
+                      _sendCommand("D${mins.isEmpty ? '0' : mins}");
                     } else { 
                       selectedVibType = newValue!; 
                       _saveSetting('vibPattern', newValue);
+                      _sendCommand("VP${_getPatternValue(newValue)}");
                     }
                   });
                 },
